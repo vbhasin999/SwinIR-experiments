@@ -579,6 +579,8 @@ class Upsample(nn.Sequential):
 
     def __init__(self, scale, num_feat):
         m = []
+        self.scale = scale
+        self.num_feat = num_feat
         if (scale & (scale - 1)) == 0:  # scale = 2^n
             for _ in range(int(math.log(scale, 2))):
                 m.append(nn.Conv2d(num_feat, 4 * num_feat, 3, 1, 1))
@@ -589,6 +591,15 @@ class Upsample(nn.Sequential):
         else:
             raise ValueError(f'scale {scale} is not supported. ' 'Supported scales: 2^n and 3.')
         super(Upsample, self).__init__(*m)
+    
+    def flops(self, H, W):
+        flops = 0
+        if (self.scale & (self.scale - 1)) == 0:  # scale = 2^n
+            for _ in range(int(math.log(self.scale, 2))):
+                flops += H * W * self.num_feat * (4 * self.num_feat) * 9
+        elif self.scale == 3:
+            flops += H * W * self.num_feat * (9 * self.num_feat) * 9
+        return flops
 
 
 class UpsampleOneStep(nn.Sequential):
@@ -649,17 +660,19 @@ class SwinIR(nn.Module):
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
                  use_checkpoint=False, upscale=2, img_range=1., upsampler='', resi_connection='1conv',
+                 device='cpu',  # Add device parameter
                  **kwargs):
         super(SwinIR, self).__init__()
         num_in_ch = in_chans
         num_out_ch = in_chans
         num_feat = 64
         self.img_range = img_range
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if in_chans == 3:
             rgb_mean = (0.4488, 0.4371, 0.4040)
-            self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
+            self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1).to(self.device)
         else:
-            self.mean = torch.zeros(1, 1, 1, 1)
+            self.mean = torch.zeros(1, 1, 1, 1).to(self.device)
         self.upscale = upscale
         self.upsampler = upsampler
         self.window_size = window_size
@@ -847,7 +860,15 @@ class SwinIR(nn.Module):
         for i, layer in enumerate(self.layers):
             flops += layer.flops()
         flops += H * W * 3 * self.embed_dim * self.embed_dim
-        flops += self.upsample.flops()
+        
+        
+        if self.upsampler == 'pixelshuffle':
+            flops += self.upsample.flops(H, W)
+            
+        else:
+            # self.upsampler == 'pixelshuffledirect'
+            flops += self.upsample.flops()
+        
         return flops
 
 

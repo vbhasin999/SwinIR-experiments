@@ -6,6 +6,9 @@ from collections import OrderedDict
 import os
 import torch
 import requests
+import coremltools as ct
+
+from thop import profile
 
 from models.network_swinir import SwinIR as net
 from utils import util_calculate_psnr_ssim as util
@@ -28,6 +31,7 @@ def main():
     parser.add_argument('--folder_gt', type=str, default=None, help='input ground-truth test image folder')
     parser.add_argument('--tile', type=int, default=None, help='Tile size, None for no tile during testing (testing as a whole)')
     parser.add_argument('--tile_overlap', type=int, default=32, help='Overlapping of different tiles')
+    parser.add_argument('--convert_to_coreml', action='store_true', help='Flag to convert model to CoreML format')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -44,6 +48,34 @@ def main():
     model = define_model(args)
     model.eval()
     model = model.to(device)
+
+    # Check if conversion to CoreML is requested
+    if args.convert_to_coreml:
+        print("Converting model to CoreML format using the Unified Conversion API...")
+
+        dummy_input = torch.randn(1, 3, 64, 64)
+        traced_model = torch.jit.trace(model, dummy_input)
+
+        # Convert the TorchScript model directly to Core ML
+        mlmodel = ct.convert(
+            traced_model,
+            convert_to="mlprogram",
+            inputs=[ct.TensorType(shape=dummy_input.shape)]
+        )
+
+        # Save the Core ML model
+        coreml_model_path = f"{args.task}_{args.scale}.mlpackage"
+        mlmodel.save(coreml_model_path)
+        print(f"Model saved to {coreml_model_path}")
+        
+        #from thop import profile
+        flops, params = profile(model, inputs=(dummy_input,))
+    
+        # Print the result in a human-readable format
+        print(f"Total Parameters: {params / 1e6:.2f}M")
+        print(f"Total FLOPs: {flops / 1e9:.2f} GFLOPs")
+
+        
 
     # setup folder and path
     folder, save_dir, border, window_size = setup(args)
@@ -125,7 +157,11 @@ def main():
                 print('-- Average PSNRB_Y: {:.2f} dB'.format(ave_psnrb_y))
 
 
+    
+
+
 def define_model(args):
+    
     # 001 classical image sr
     if args.task == 'classical_sr':
         model = net(upscale=args.scale, in_chans=3, img_size=args.training_patch_size, window_size=8,
