@@ -55,6 +55,8 @@ def calculate_sparsity_model(model):
 
     total_nonzero = sum(p[p != 0].numel() for p in model.parameters())
     total_params = sum(p.numel() for p in model.parameters())
+
+    print(f"calculating model sparsity with {total_nonzero:,} non-zero params out of {total_params:,} total params")
     return 1 - (total_nonzero / total_params)
 
 def calculate_sparse_model_size(model, temp_file=None):
@@ -160,6 +162,7 @@ def prune_attn_heads(model, heads_to_prune, plot_freq=10):
     """
 
     params_to_prune = []
+    total_params_pruned = 0
     layers_processed = 0
 
     for module in model.modules():
@@ -168,8 +171,10 @@ def prune_attn_heads(model, heads_to_prune, plot_freq=10):
             plot = (layers_processed + 1) % plot_freq == 0
             params_to_prune.append((module.attn.qkv, "weight"))
             prune_attn_heads_layer(module.attn, heads_to_prune, plot)
+            total_params_pruned += 3 * heads_to_prune * (module.attn.dim // module.attn.num_heads) * module.attn.dim
             layers_processed += 1
     
+    print(f'total params pruned: {total_params_pruned:,} across {layers_processed} layers')
     print(f'Overall sparsity: {calculate_sparsity_overall(params_to_prune):.4f}')
     print(f'sparse model size: {calculate_sparse_model_size(model, temp_file=f"pruned_models/structured_attn_heads_{heads_to_prune}.pt"):.4f}')
 
@@ -238,6 +243,7 @@ def prune_linear_nodes(model, num_nodes_to_prune, plot_freq=50):
     """
     
     params_to_prune = []
+    total_params_pruned = 0
     layers_processed = 0
 
     for module in model.modules():
@@ -249,10 +255,14 @@ def prune_linear_nodes(model, num_nodes_to_prune, plot_freq=50):
 
                     if plot: plot_linear_weights(submodule, title=f"Layer {layers_processed} Before Pruning {submodule_name}")
                     prune.ln_structured(submodule, name="weight", amount=num_nodes_to_prune, n=1, dim=1)
+                    prune.remove(submodule, "weight")
+
+                    total_params_pruned += num_nodes_to_prune * submodule.out_features
                     if plot: plot_linear_weights(submodule, title=f"Layer {layers_processed} After Pruning {submodule_name}")
 
                     layers_processed += 1
     
+    print(f'total params pruned: {total_params_pruned:,} across {layers_processed} layers')
     print(f'Overall sparsity: {calculate_sparsity_overall(params_to_prune):.4f}')
     print(f'sparse model size: {calculate_sparse_model_size(model, temp_file=f"pruned_models/structured_fc_neurons_{num_nodes_to_prune}.pt"):.4f}')
 
